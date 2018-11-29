@@ -1,0 +1,9 @@
+body
+{
+	background-color: rgb(200, 230, 230);
+}
+
+#theCanvas
+{
+	border: thin solid black;
+}
