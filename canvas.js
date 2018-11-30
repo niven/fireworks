@@ -69,9 +69,15 @@ let colors = [
 	v3(255,215,0 ), // gold
 	v3(255,165,0), // orange
 ];
+
 function pick_color() {
    return colors[Math.floor(Math.random()*colors.length)];
 }
+
+function css_string_from_color( color ) {
+   return 'rgb(' + color.r + ',' + color.g + ',' + color.b + ')';
+}
+
 
 let use_preballs = false;
 var preballs = [
@@ -107,6 +113,41 @@ function mouse_coords_from_event( e ) {
 	}
 
 	return v3( x - e.originalTarget.offsetLeft, y - e.originalTarget.offsetTop, 0 );
+}
+
+function read_control_values() {
+
+	console.log( "Reading control values" );
+	for( var key in controls ) {
+		let el = document.getElementById( controls[key].dom_id );
+		var new_value = null;
+		switch( el.type ) {
+			case "checkbox": {
+				new_value = el.checked;
+				break;
+			}
+			default:
+				new_value = Number.parseFloat( el.value );
+		}
+		
+		console.log( key + " from " + window[controls[key].var] + " to " + new_value );
+		window[ controls[key].var ] = new_value;
+	}
+
+	control_values_need_update = false;
+}
+
+/************** Create world objects **************************/
+
+function firefly( position, color, velocity ) {
+	
+   world.fireflies.push(
+		{ 
+			"position": position,
+			"color": color, 
+			"velocity": velocity
+		} 
+	);
 }
 
 function line( start, delta, color, optional_rotation_rad ) {
@@ -150,6 +191,79 @@ function ball( pos ) {
 	);
 
 }
+
+function smoke( position, velocity ) {
+	
+	if( !SMOKE_ON ) {
+		return;
+	}
+	
+	let angle_range_degrees = SMOKE_ARC_DEGREES;
+	let angle_range_radians = PI_2 * angle_range_degrees / 360;
+	let vopp_small = mul( velocity, 0.015 );
+	let smoke_col = v3( 80, 80, 80 );
+	for( var i=0; i<SMOKE_DENSITY; i++ ) {
+		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
+		smoke_v = rotate( vopp_small, angle );
+		world.smoke.push( { "position": position, "velocity": smoke_v, "color": mul( smoke_col, Math.random() * .4 ), "radius": 5 } );
+	}
+
+}
+
+function fire( position, velocity ) {
+	
+	let angle_range_degrees = SMOKE_ARC_DEGREES;
+	let angle_range_radians = PI_2 * angle_range_degrees / 360;
+	let smoke_col = v3( 200, 90, 90 );
+	for( var i=0; i<FIRE_DENSITY; i++ ) {
+		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
+		fire_v = rotate( velocity, angle );
+		fire_v = mul( fire_v, 1 + Math.random() * 0.1 );
+		world.fire.push( { "position": position, "velocity": fire_v, "color": mul( smoke_col, Math.random() * .4 ), "radius": rnd(FIRE_SIZE_MAX, FIRE_SIZE_MIN), "age": 0 } );
+	}
+
+}
+
+function flutter( position, velocity ) {
+	let ctx = document.getElementById("scene").getContext("2d");
+
+	let vopposite = mul( velocity, -1 );
+	
+	ctx.strokeStyle = 'mediumorchid';
+	let vopp_small = mul( vopposite, 0.5 );
+	let angle_range_degrees = 90;
+	let angle_range_radians = PI_2 * angle_range_degrees / 360;
+	for( var i=0; i<10; i++ ) {
+		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
+		ctx.beginPath();
+		endpoint = add( position, rotate( vopp_small, angle ) );
+		ctx.moveTo( position.x, position.y );
+		ctx.lineTo( endpoint.x, endpoint.y );
+		ctx.stroke();		
+	}
+	
+}
+
+
+function star( center, base_color ) {
+
+	let min_distance = 0.5;
+	let max_distance = 6;
+	let step = (max_distance - min_distance) / 4;
+	for( var d = min_distance; d < max_distance; d += step) {
+		// calculate where the corners of a square with size 2d are
+      for( var i = 0; i < 4; i++ ) {
+			let angle = ( i/4 * PI_2);
+	      let x = 10 * d * Math.cos(angle) + center.x;
+	      let y = 10 * d * Math.sin(angle) + center.y;
+			let end = v3( x - center.x, y - center.y, 0); // outward from the center
+
+			line( v3(center.x, center.y, 0), end, base_color, PI_2 / 200 );				
+      }		
+	}
+}
+
+/*************** Setup ***********************/
 
 function go() {
 
@@ -291,6 +405,10 @@ function draw_samples( ctx ) {
 	let origin_4 = v3( 500, 350, 0);
 	fire( origin_4, base_vector_3 );
 	smoke( origin_4, base_vector_3 );
+	
+	// works nice as a one off effect
+	let origin_5 = v3( 600, 350, 0 );
+	star( origin_5, colors[1] );
 
 }
 
@@ -315,28 +433,6 @@ function draw_stats( ctx ) {
 
 	let avg_render_time = Math.ceil( frame_render_time_ms.reduce( (acc, cur) => acc += cur, 0 ) / 100 );
 	ctx.fillText('Frame ms ' + avg_render_time, 10, 40);
-}
-
-function read_control_values() {
-
-	console.log( "Reading control values" );
-	for( var key in controls ) {
-		let el = document.getElementById( controls[key].dom_id );
-		var new_value = null;
-		switch( el.type ) {
-			case "checkbox": {
-				new_value = el.checked;
-				break;
-			}
-			default:
-				new_value = Number.parseFloat( el.value );
-		}
-		
-		console.log( key + " from " + window[controls[key].var] + " to " + new_value );
-		window[ controls[key].var ] = new_value;
-	}
-
-	control_values_need_update = false;
 }
 
 function draw( timestamp ) {
@@ -459,10 +555,15 @@ function animate_rockets( time_passed_seconds ) {
 
 		smoke( el.position, mul( el.velocity, -1 ) );
 
+		// rendering is quite fast, so avoid generating 1000s of fireflies
+		if( Math.random() < 0.5 ) {
+			// firefly( v3(el.position.x, el.position.y, 0), mul(el.color, 0.3), v3(0,0,0) );
+			fire( v3(el.position.x, el.position.y, 0), v3(0,0,0) );
+		}
+
 	   ctx.beginPath()
 	   ctx.fillStyle = css_string_from_color(el.color);
 	   ctx.arc(el.position.x, el.position.y, el.radius, 0, PI_2, false);
-	   ctx.closePath();
 	   ctx.fill();
 		
 		// console.log(el.y);
@@ -470,9 +571,6 @@ function animate_rockets( time_passed_seconds ) {
 		let t_passed = t_now - el.time;
 		el.time = t_now;
 		
-		// rendering is quite fast, so avoid generating 1000s of fireflies
-		if( Math.random() < 0.5 )
-			     world.fireflies.push( { "position": v3(el.position.x, el.position.y, 0), "color": mul(el.color, 0.3), "velocity": v3(0,0,0) });
 		
 		// update position based on speed and time passed
 	   el.position = add( el.position, mul( el.velocity, time_passed_seconds ) );
@@ -488,7 +586,14 @@ function animate_rockets( time_passed_seconds ) {
 	world.rockets = world.rockets.filter( rocket => rocket.position.y > 0 ); // only retain ones that are in view
 	
 	world.rockets.filter( rocket => rocket.velocity.y >= -80 ).forEach( function( el, idx, arr ) {
-		rocket_burst( el.position, Math.random() * 10 + 30, el.color );
+		
+		// poly does random 3,4,5,6 sides, so +circle there are 5 options
+		if( Math.random() < 1/5 ) {
+			rocket_burst_circle( el.position, 40, el.color );
+		} else {
+			rocket_burst_poly( el.position, 40, el.color );		
+		}
+		
 	});
 	world.rockets = world.rockets.filter( rocket => rocket.velocity.y < -80 );
 	
@@ -602,61 +707,6 @@ function animate_balls( time_passed_seconds ) {
 }
 
 
-function css_string_from_color( v ) {
-   return 'rgb(' + v.r + ',' + v.g + ',' + v.b + ')';
-}
-
-function smoke( position, velocity ) {
-	
-	if( !SMOKE_ON ) {
-		return;
-	}
-	
-	let angle_range_degrees = SMOKE_ARC_DEGREES;
-	let angle_range_radians = PI_2 * angle_range_degrees / 360;
-	let vopp_small = mul( velocity, 0.015 );
-	let smoke_col = v3( 80, 80, 80 );
-	for( var i=0; i<SMOKE_DENSITY; i++ ) {
-		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
-		smoke_v = rotate( vopp_small, angle );
-		world.smoke.push( { "position": position, "velocity": smoke_v, "color": mul( smoke_col, Math.random() * .4 ), "radius": 5 } );
-	}
-
-}
-
-function fire( position, velocity ) {
-	
-	let angle_range_degrees = SMOKE_ARC_DEGREES;
-	let angle_range_radians = PI_2 * angle_range_degrees / 360;
-	let smoke_col = v3( 200, 90, 90 );
-	for( var i=0; i<FIRE_DENSITY; i++ ) {
-		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
-		fire_v = rotate( velocity, angle );
-		fire_v = mul( fire_v, 1 + Math.random() * 0.1 );
-		world.fire.push( { "position": position, "velocity": fire_v, "color": mul( smoke_col, Math.random() * .4 ), "radius": rnd(FIRE_SIZE_MAX, FIRE_SIZE_MIN), "age": 0 } );
-	}
-
-}
-
-function flutter( position, velocity ) {
-	let ctx = document.getElementById("scene").getContext("2d");
-
-	let vopposite = mul( velocity, -1 );
-	
-	ctx.strokeStyle = 'mediumorchid';
-	let vopp_small = mul( vopposite, 0.5 );
-	let angle_range_degrees = 90;
-	let angle_range_radians = PI_2 * angle_range_degrees / 360;
-	for( var i=0; i<10; i++ ) {
-		let angle = rnd( angle_range_radians/2, -angle_range_radians/2 );
-		ctx.beginPath();
-		endpoint = add( position, rotate( vopp_small, angle ) );
-		ctx.moveTo( position.x, position.y );
-		ctx.lineTo( endpoint.x, endpoint.y );
-		ctx.stroke();		
-	}
-	
-}
 
 // create a bunch of fading fireflies at the edge of circle (or point)
 function burst( ball ) {
@@ -678,32 +728,9 @@ function burst( ball ) {
       let x = ball.radius * Math.cos(angle) + ball.position.x;
       let y = ball.radius * Math.sin(angle) + ball.position.y;
 		let color = mul( ball.color, Math.random() + 0.5 ); // some brigther, some less -> feels more natural
-      world.fireflies.push( 
-			{
-				 "position": v3( x, y, 0), "color" : color, "velocity": v3( (Math.random() - 0.5)*4, (Math.random() - 0.5)*4, 0 ) 
-			});
+		firefly( v3( x, y, 0), color,  v3( (Math.random() - 0.5)*4, (Math.random() - 0.5)*4, 0 ) );
    }
    return radius_after;
-}
-
-function star( center, base_color ) {
-
-	let min_distance = 0.5;
-	let max_distance = 6;
-	let step = (max_distance - min_distance) / 4;
-	for( var d = min_distance; d < max_distance; d += step) {
-		// calculate where the corners of a square with size 2d are
-      for( var i = 0; i < 4; i++ ) {
-			let angle = ( i/4 * PI_2);
-	      let x = 10 * d * Math.cos(angle) + center.x;
-	      let y = 10 * d * Math.sin(angle) + center.y;
-			let end = v3( x - center.x, y - center.y, 0); // outward from the center
-
-			line( v3(center.x, center.y, 0), end, base_color, PI_2 / 200 );				
-      }
-		
-	}
-
 }
 
 function rocket_burst_poly( center, power, base_color ) {
@@ -717,7 +744,7 @@ function rocket_burst_poly( center, power, base_color ) {
 	let step = (max_distance - min_distance) / ROCKET_HALO_COUNT;
 	let angle_offset = rnd( 0, PI_2 );
 	
-	let poly = rnd_int( 3, 8 );
+	let poly = rnd_int( 3, 7 );
 	
 	for( var d = min_distance; d < max_distance; d += step) {
 
@@ -749,8 +776,7 @@ function rocket_burst_poly( center, power, base_color ) {
 				let pos = add( c1, mul( diff, Math.random() ) );
 				let center_velocity = mul( v3( pos.x - center.x, pos.y - center.y, 0), FIREFLY_SPEED *  1/max_distance);
 				let color = mul( base_color, Math.random() + 0.7 ); // some brigther, some less -> feels more natural
-				
-		      world.fireflies.push( { "position": pos, "color": color, "velocity": center_velocity } );
+				firefly( pos, color, center_velocity );
 			}
 		}
 		
@@ -776,20 +802,8 @@ function rocket_burst_circle( center, power, base_color ) {
 		
 			let color = mul( base_color, Math.random() + 0.5 ); // some brigther, some less -> feels more natural
 			let center_velocity = mul( v3( x - center.x, y - center.y, 0), FIREFLY_SPEED *  1/max_distance);
-	      world.fireflies.push( { "position": v3( x, y, 0), "color": color, "velocity": center_velocity } );
+			firefly( v3( x, y, 0), color, center_velocity );
 	   }
-	}
-
-	
-}
-
-function rocket_burst( center, power, base_color ) {
-
-	// poly does random 3,4,5,6,7 sides, so +circle there are 6 options
-	if( Math.random() < 1/6 ) {
-		rocket_burst_circle( center, power, base_color );
-	} else {
-		rocket_burst_poly( center, power, base_color );		
 	}
 
 }
