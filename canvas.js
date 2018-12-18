@@ -1,18 +1,21 @@
-let COF_air = 0.0001; // Coeffiecnt of Friction of air relative to a rocket
-let GRAVITY = 9.8; // m/s^2
+let GRAVITY = v3(0, 9.8, 0); // m/s^2
 let PI_2 = 2 * Math.PI;
+
+let v0 = v3( 0, 0, 0 );
 
 var DEBUG = true;
 var SAMPLES = false;
 
-let WIDTH = 1200;
-let HEIGHT = 600;
+// in pixels
+let CANVAS_WIDTH = 1200;
+let CANVAS_HEIGHT = 600;
+
+// in meters
+let WORLD_WIDTH = CANVAS_WIDTH;
+let WORLD_HEIGHT = 600;
 
 let BALL_SIZE = 30;
 let BALL_SIZE_MIN = 10;
-
-let ROCKET_MAX_TIME = Math.sqrt( 2 * 600 / GRAVITY );
-let ROCKET_MAX_Y_SPEED = 600 / ROCKET_MAX_TIME;
 
 let FIREFLY_SPEED = 2;
 
@@ -25,6 +28,14 @@ var FIRE_SIZE_MIN = 0.5;
 var FIRE_SIZE_MAX = 8;
 
 var ROCKET_HALO_COUNT = 5;
+// we want the rockets to explode at about 2/3rds of the height of the canvas
+// TODO: actual math here. Too early and I've had too little tea
+let ROCKET_VELOCITY_Y = -200;
+
+var STAR_SIZE = 3;
+
+var SPRAY_MAX_AGE_MS = 3000;
+var TWINKLE_FACTOR = 1;
 
 let COLOR_MIN = 20.0; // cutoff color value for removing fireflies
 let GRADIENT_WIDTH = 100;
@@ -45,6 +56,9 @@ var controls = {
 	"fire_size_min": { "dom_id": "fire_size_min", "var": "FIRE_SIZE_MIN" },
 
 	"rocket_halo_count": { "dom_id": "rocket_halo_count", "var": "ROCKET_HALO_COUNT" },
+
+	"star_size": { "dom_id": "star_size", "var": "STAR_SIZE" },
+	"twinkle": { "dom_id": "twinkle", "var": "TWINKLE_FACTOR" },
 }
 
 var world = {};
@@ -70,15 +84,6 @@ let colors = [
 	v3(255,165,0), // orange
 ];
 
-function pick_color() {
-   return colors[Math.floor(Math.random()*colors.length)];
-}
-
-function css_string_from_color( color ) {
-   return 'rgb(' + color.r + ',' + color.g + ',' + color.b + ')';
-}
-
-
 let use_preballs = false;
 var preballs = [
 	
@@ -99,6 +104,14 @@ var preballs = [
 
 ];
 
+function pick_color() {
+   return colors[Math.floor(Math.random()*colors.length)];
+}
+
+function css_string_from_color( color ) {
+   return 'rgb(' + color.r + ',' + color.g + ',' + color.b + ')';
+}
+
 function mouse_coords_from_event( e ) {
 	var x = 0;
 	var y = 0;
@@ -117,7 +130,6 @@ function mouse_coords_from_event( e ) {
 
 function read_control_values() {
 
-	console.log( "Reading control values" );
 	for( var key in controls ) {
 		let el = document.getElementById( controls[key].dom_id );
 		var new_value = null;
@@ -130,7 +142,7 @@ function read_control_values() {
 				new_value = Number.parseFloat( el.value );
 		}
 		
-		console.log( key + " from " + window[controls[key].var] + " to " + new_value );
+		// console.log( key + " from " + window[controls[key].var] + " to " + new_value );
 		window[ controls[key].var ] = new_value;
 	}
 
@@ -150,12 +162,13 @@ function firefly( position, color, velocity ) {
 	);
 }
 
-function line( start, delta, color, optional_rotation_rad ) {
+function line( start, delta, velocity, color, optional_rotation_rad ) {
 	
 	world.lines.push(
 		{
 			"start": start,
 			"delta": delta,
+			"velocity": velocity,
 			"color": color,
 			"rotation": optional_rotation_rad,
 		}
@@ -189,8 +202,48 @@ function ball( pos ) {
 	      "id": Date.now(),
 		}
 	);
-
 }
+
+function spray( position, velocity, color ) {
+	
+	world.sprays.push(
+		{
+			"position": position,
+			"velocity": velocity,
+			"color": color,
+			"created_ms": Date.now()
+		}
+	);
+}
+
+function dot( position, velocity, size, color ) {
+
+	world.dots.push(
+		{
+			"position": position,
+			"velocity": velocity,
+			"size": size,
+			"color": color
+		}
+	);
+}
+
+function star( position, velocity, size, color ) {
+	
+	// the rotation does not cost more to animation, just how the "twinkle" effect looks
+	// fast: very winkly, slow some other nice effect
+	world.stars.push(
+		{
+			"position": position,
+			"velocity": velocity,
+			"size": size,
+			"color": color,
+			"rotation": TWINKLE_FACTOR * (Math.random() < 0.5 ? PI_2 : -PI_2)
+		}
+	);
+}
+
+/********************* effects ************************/
 
 function smoke( position, velocity ) {
 	
@@ -244,28 +297,20 @@ function flutter( position, velocity ) {
 	
 }
 
-
-function star( center, base_color ) {
-
-	let min_distance = 0.5;
-	let max_distance = 6;
-	let step = (max_distance - min_distance) / 4;
-	for( var d = min_distance; d < max_distance; d += step) {
-		// calculate where the corners of a square with size 2d are
-      for( var i = 0; i < 4; i++ ) {
-			let angle = ( i/4 * PI_2);
-	      let x = 10 * d * Math.cos(angle) + center.x;
-	      let y = 10 * d * Math.sin(angle) + center.y;
-			let end = v3( x - center.x, y - center.y, 0); // outward from the center
-
-			line( v3(center.x, center.y, 0), end, base_color, PI_2 / 200 );				
-      }		
-	}
-}
-
 /*************** Setup ***********************/
 
-function go() {
+function create_initial_objects() {
+
+	if( use_preballs ) {
+		world.balls = preballs;
+	}
+
+	spray( v3(300, 300, 0), v3(10, -20,0), pick_color() );
+	// rocket( v3(400, world.height - 1, 0), v3( 0, ROCKET_VELOCITY_Y, 0) );
+	
+}
+
+function setup_input( canvas_element ) {
 
 	document.body.onkeydown = function( event ) {
 		switch(event.key) {
@@ -283,8 +328,9 @@ function go() {
 			 case " ": {
 				event.preventDefault();
 				if( world.rockets.length < 10 ) {
-					let v = v3( Math.random() * 4*GRAVITY - 2*GRAVITY, Math.random() * -6*GRAVITY - 50*GRAVITY, 0 );
-					let pos = v3( Math.random() * world.width, world.height, 0);
+					// let v = v3( rnd( 20, 10 ), rnd( -6 * GRAVITY.y, -2 * GRAVITY.y ), 0 );
+					let v = v3( rnd( 5, -5 ), rnd( 1 * ROCKET_VELOCITY_Y, 0.9 * ROCKET_VELOCITY_Y), 0 );
+					let pos = v3( rnd( world.width * 0.9, world.width * 0.1) , world.height - 1, 0);
 					rocket( pos, v );					
 				}
 				break;
@@ -293,44 +339,16 @@ function go() {
 	 		console.log("KEYPRESS key: " + event.key);
 		}
 	};
-
-	var c = document.createElement("canvas");
 	
-	c.onclick = function( click ) {
+	canvas_element.onclick = function( click ) {
 		let pos = mouse_coords_from_event( click );
 		ball( pos );
 	};
-	
-	c.setAttribute("width", WIDTH);
-	c.setAttribute("height", HEIGHT);
-	c.setAttribute("id", "scene");
-	document.body.appendChild(c);
 
-	world.width = c.width;
-	world.height = c.height;
-	
-	world.bottom = world.height;
-	world.top = 0;
-	world.left = 0;
-	world.right = world.width;
-	
-	world.fireflies = []; // drift and fade fast
-	world.rockets = [];
-	world.smoke = []; // drift very little, expand and fade
-	world.fire = []; // cycle through 'fire colors'
-	world.lines = [];
+}
 
-	world.balls = [];
-	if( use_preballs ) {
-		world.balls = preballs;
-	}
+function create_materials() {
 	
-	rocket( v3( world.width / 2, world.bottom, 0), v3( 0, -600, 0 ) );
-	console.log( world.rockets );
-	
-	let trigger_reread_control_values = function() { control_values_need_update = true };
-	Object.keys(controls).forEach( name => document.getElementById( controls[name].dom_id ).onchange = trigger_reread_control_values );
-
 	fire_gradient = make_gradient( [
 		[1, 'lightyellow'],
 		[0.95, 'sandybrown'],
@@ -346,21 +364,58 @@ function go() {
 		[0.3, 'deepskyblue'],
 		[0.0, 'powderblue']
 	], GRADIENT_WIDTH);
+
 	water_colors = css_colors_from_gradient( water_gradient );
+
+}
+
+function main() {
+
+	var c = document.createElement("canvas");
+
+	setup_input( c );
+
+	c.setAttribute("width", CANVAS_WIDTH);
+	c.setAttribute("height", CANVAS_HEIGHT);
+	c.setAttribute("id", "scene");
+	document.body.appendChild(c);
+
+	world.width = WORLD_WIDTH;
+	world.height = WORLD_HEIGHT;
+	
+	world.bottom = world.height;
+	world.top = 0;
+	world.left = 0;
+	world.right = world.width;
+	
+	world.fireflies = []; // drift and fade fast
+	world.rockets = [];
+	world.smoke = []; // drift very little, expand and fade
+	world.fire = []; // cycle through 'fire colors'
+	world.lines = [];
+	world.sprays = [];
+	world.stars = [];
+	world.dots = [];
+	world.balls = [];
+	
+	create_initial_objects();
+	
+	let trigger_reread_control_values = function() { control_values_need_update = true };
+	Object.keys(controls).forEach( name => document.getElementById( controls[name].dom_id ).onchange = trigger_reread_control_values );
+
+	create_materials();
 
 	ctx = document.getElementById("scene").getContext("2d", { alpha: false });
 	ctx.globalCompositeOperation = "lighter";
 	ctx.font = "10px Menlo";
 
 	world.time_at_frame_end = Date.now();
-	world.last_time = 0;
+	world.last_time_ms = 0;
 
 	window.requestAnimationFrame( draw );
 }
 
 function make_gradient( stops, size ) {
-	
-	console.log( stops );
 	
 	let canvas = document.createElement("canvas");
 	canvas.setAttribute("width", size);
@@ -408,13 +463,14 @@ function draw_samples( ctx ) {
 	
 	// works nice as a one off effect
 	let origin_5 = v3( 600, 350, 0 );
-	star( origin_5, colors[1] );
+	star( origin_5, v3(200,-100,0), STAR_SIZE, colors[1] );
 
 }
 
 function draw_debug( ctx ) {
 
 	draw_stats( ctx );
+	draw_values( ctx );
 	
 	ctx.fillStyle = 'rgb(255,255,255)'; // white
 	ctx.fillText('Fire gradient ', 100, 10);
@@ -424,24 +480,44 @@ function draw_debug( ctx ) {
 	ctx.putImageData(water_gradient, 190, 15);	
 }
 
+function draw_values( ctx ) {
+
+	ctx.fillStyle = 'rgb(255,255,255)'; // white
+
+	var y = 10;
+	for( var key in controls ) {
+		ctx.fillText(key + ': ' + window[ controls[key].var ], world.width-200, y);
+		y += 10;
+	}
+	
+}
+
 function draw_stats( ctx ) {
 
 	ctx.fillStyle = 'rgb(255,255,255)'; // white
-	ctx.fillText('Fireflies ' + world.fireflies.length, 10, 10);
-	ctx.fillText('Smoke     ' + world.smoke.length, 10, 20);
-	ctx.fillText('Fire      ' + world.fire.length, 10, 30);
 
 	let avg_render_time = Math.ceil( frame_render_time_ms.reduce( (acc, cur) => acc += cur, 0 ) / 100 );
-	ctx.fillText('Frame ms ' + avg_render_time, 10, 40);
+	ctx.fillText('Frame ms ' + avg_render_time, 10, 10);
+
+	ctx.fillText('Fireflies ' + world.fireflies.length, 10, 20);
+	ctx.fillText('Smoke     ' + world.smoke.length, 10, 30);
+	ctx.fillText('Fire      ' + world.fire.length, 10, 40);
+	ctx.fillText('Lines     ' + world.lines.length, 10, 50);
+	ctx.fillText('Dots      ' + world.dots.length, 10, 60);
+	ctx.fillText('Sprays    ' + world.sprays.length, 10, 70);
+	ctx.fillText('Stars     ' + world.stars.length, 10, 80);
+	ctx.fillText('Rockets   ' + world.rockets.length, 10, 90);
+	ctx.fillText('Balls     ' + world.balls.length, 10, 100);
 }
 
-function draw( timestamp ) {
+function draw( time_since_start_rendering_ms ) {
 
-	let time_start = Date.now();
-	let time_passed = timestamp - world.last_time;
-	world.last_time = timestamp;
+	let time_delta_ms = time_since_start_rendering_ms - world.last_time_ms;
+	world.last_time_ms = time_since_start_rendering_ms;
 	
-	let time_passed_seconds = time_passed / 1000;
+	let time_start = Date.now();
+
+	let time_delta_seconds = time_delta_ms / 1000;
 
 	if( !running ) {
 		window.requestAnimationFrame( draw );
@@ -452,11 +528,11 @@ function draw( timestamp ) {
 		read_control_values();		
 	}
 
-	ctx.clearRect(0 ,0, WIDTH, HEIGHT);
+	ctx.clearRect(0 ,0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
 	// set background
 	ctx.fillStyle = 'rgb(0,0,0)'; // black
-	ctx.fillRect(0, 0, WIDTH, HEIGHT);
+	ctx.fillRect(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
 	if( DEBUG ) {
 		draw_debug( ctx );
@@ -465,27 +541,32 @@ function draw( timestamp ) {
 		draw_samples( ctx );
 	}
 
-	animate_balls( time_passed_seconds );
+	animate_dots( time_delta_ms );
+
+	animate_balls( time_delta_ms );
 	
-	animate_rockets( time_passed_seconds );
+	animate_rockets( time_delta_ms );
 
 	animate_fireflies();
 
 	animate_smoke();
 
-	animate_fire( time_passed_seconds );
+	animate_fire( time_delta_ms );
 	
-	animate_lines()
+	animate_lines( time_delta_ms );
+
+	animate_sprays( time_delta_ms );
+
+	animate_stars( time_delta_ms );
 	
 	let time_end = Date.now();
-	world.time_at_frame_end = time_end;
 	frame_render_time_ms.push( time_end - time_start );
 	frame_render_time_ms.shift();
 	
 	window.requestAnimationFrame( draw );
 }
 
-function animate_fire( time_passed_seconds ) {
+function animate_fire( time_passed_ms ) {
 	
 	for( var i=0; i<world.fire.length; i++ ) {
 		
@@ -500,10 +581,9 @@ function animate_fire( time_passed_seconds ) {
 	   ctx.fill();
 
 	   f.radius *= 0.96;
-	   f.position.x += time_passed_seconds * f.velocity.x;
-	   f.position.y += time_passed_seconds * f.velocity.y;
+		f.position = add( f.position, mul( f.velocity, time_passed_ms/1000 ) );
 		
-		f.age += time_passed_seconds;
+		f.age += time_passed_ms;
 	}
 
 	world.fire = world.fire.filter( f => f.radius > FIRE_SIZE_MIN );	
@@ -534,13 +614,13 @@ function animate_smoke() {
 function animate_fireflies() {
 
 	world.fireflies.forEach(function(el, idx, ar){
+		let screen_coords = screen_coords_from_world_coords( el.position );
 	   ctx.beginPath();
 	   ctx.fillStyle = css_string_from_color(el.color); // calling this a lot for the same color probably
-	   ctx.arc(el.position.x, el.position.y, 3, 0, PI_2, false);
+	   ctx.arc( screen_coords.x, screen_coords.y, 3, 0, PI_2, false);
 	   ctx.fill();
 
 	   el.color = mul(el.color, 0.96 );
-	   // el.color = mul(el.color, 0.999 );
 	   el.position.x += el.velocity.x;
 	   el.position.y += el.velocity.y;
 	});
@@ -548,59 +628,69 @@ function animate_fireflies() {
 	world.fireflies = world.fireflies.filter( f => (f.color.r > COLOR_MIN) || (f.color.g > COLOR_MIN) || (f.color.b > COLOR_MIN) );
 }
 
-function animate_rockets( time_passed_seconds ) {
+function screen_coords_from_world_coords( position ) {
+	let result = v3(
+		position.x / WORLD_WIDTH * CANVAS_WIDTH,
+		position.y / WORLD_HEIGHT * CANVAS_HEIGHT,
+		position.z
+	);
+	return result;
+}
+
+function animate_rockets( time_delta_ms ) {
 	
-	// draw rockets (they don't collide for now)
-	world.rockets.forEach(function(el, idx, ar){
-
-		smoke( el.position, mul( el.velocity, -1 ) );
-
-		// rendering is quite fast, so avoid generating 1000s of fireflies
-		if( Math.random() < 0.5 ) {
-			// firefly( v3(el.position.x, el.position.y, 0), mul(el.color, 0.3), v3(0,0,0) );
-			fire( v3(el.position.x, el.position.y, 0), v3(0,0,0) );
-		}
-
-	   ctx.beginPath()
-	   ctx.fillStyle = css_string_from_color(el.color);
-	   ctx.arc(el.position.x, el.position.y, el.radius, 0, PI_2, false);
-	   ctx.fill();
-		
-		// console.log(el.y);
-		let t_now = Date.now();
-		let t_passed = t_now - el.time;
-		el.time = t_now;
-		
-		
-		// update position based on speed and time passed
-	   el.position = add( el.position, mul( el.velocity, time_passed_seconds ) );
-		// vertical speed is reduced by gravity
-		el.velocity.y += GRAVITY * time_passed_seconds;
-		// all speed is reduced by friction, which is proportional to the force
-		// since rockets all have the same mass (for now?) we can absorb that term in the Coefficient Of Friction
-		let friction = mul( el.velocity, COF_air * length(el.velocity) );
-		el.velocity = sub( el.velocity, friction );
-	});
-
 	// explode any rockets that have reached their maximum height (ish, it's easier to explode them when they slow down)
-	world.rockets = world.rockets.filter( rocket => rocket.position.y > 0 ); // only retain ones that are in view
-	
-	world.rockets.filter( rocket => rocket.velocity.y >= -80 ).forEach( function( el, idx, arr ) {
-		
+	world.rockets = world.rockets.filter( rocket => in_bounds( rocket.position, world.width, world.height) ); // only retain ones that are in view
+	//
+	let rocket_explode_velocity = -40; // m/s
+
+	world.rockets.filter( rocket => rocket.velocity.y >= rocket_explode_velocity ).forEach( function( el, idx, arr ) {
+		console.log ("splde");
 		// poly does random 3,4,5,6 sides, so +circle there are 5 options
 		if( Math.random() < 1/5 ) {
 			rocket_burst_circle( el.position, 40, el.color );
 		} else {
-			rocket_burst_poly( el.position, 40, el.color );		
+			rocket_burst_poly( el.position, 40, el.color );
 		}
-		
 	});
-	world.rockets = world.rockets.filter( rocket => rocket.velocity.y < -80 );
+	world.rockets = world.rockets.filter( rocket => rocket.velocity.y < rocket_explode_velocity );
+	
+	let time_delta_seconds = time_delta_ms / 1000;
+	
+	for( var i=0; i<world.rockets.length; i++ ) {
+		let r = world.rockets[i];
+		console.log( r.velocity );
+		let screen_coords = screen_coords_from_world_coords( r.position );
+
+		smoke( screen_coords, mul( r.velocity, -1 ) );
+
+		if( DEBUG ) {
+			dot( screen_coords, v0, 2, colors[0] );
+		}
+		// rendering is quite fast, so avoid generating 1000s of fireflies
+		// if( Math.random() < 0.5 ) {
+		// 	// firefly( v3(el.position.x, el.position.y, 0), mul(el.color, 0.3), v3(0,0,0) );
+		// 	fire( v3(r.position.x, r.position.y, 0), v3(0,0,0) );
+		// }
+
+	   ctx.beginPath()
+	   ctx.fillStyle = css_string_from_color(r.color);
+	   ctx.arc( screen_coords.x, screen_coords.y, r.radius, 0, PI_2, false);
+	   ctx.fill();
+		
+		// update position based on speed and time passed
+	   r.position = add( r.position, mul( r.velocity, time_delta_seconds ) );
+		// vertical speed is reduced by gravity (adding because y speed is negative)
+		r.velocity = add( r.velocity, mul(GRAVITY, time_delta_seconds) );
+		r.velocity.y += 25 * time_delta_seconds; // "fuel spent"
+		
+	}
 	
 }
 
-function animate_balls( time_passed_seconds ) {
+function animate_balls( time_passed_ms ) {
 	
+	let time_passed_seconds = time_passed_ms / 1000;
 	var collisionIndex = 0;
 	world.balls.forEach(function(el, idx, ar){
 
@@ -706,6 +796,116 @@ function animate_balls( time_passed_seconds ) {
 	world.balls = world.balls.filter( ball => ball.radius > 0 );
 }
 
+function animate_sprays( time_delta_ms ) {
+
+
+	let time_delta_seconds = time_delta_ms / 1000;
+	let gravity_drop = mul( mul( GRAVITY, time_delta_seconds ), 0.1); // gravity 10%
+	
+	world.sprays = world.sprays.filter( s => in_bounds( s.position, world.width, world.height ) );
+	
+	for( var i=0; i<world.sprays.length; i++ ) {
+		let s = world.sprays[i];
+
+		// determines how wide the trail is
+		let angle = rnd( PI_2 * (45/360), -PI_2 * (45/360));
+		let star_direction = rotate( s.velocity, angle );
+		let star_velocity = mul( star_direction, 0.1 );
+		//
+		if( Math.random() < (0.3) ) {
+			dot( s.position, star_velocity, 3, s.color );
+		// 	star_obj( s.position, star_velocity, STAR_SIZE, s.color )
+		}
+		// star( s.position, star_velocity, STAR_SIZE, s.color );
+		
+		s.position = add( s.position, mul( s.velocity, time_delta_seconds ) );
+		s.velocity = add( s.velocity, gravity_drop );
+	}
+	
+}
+
+function draw_line( from, to, color ) {
+
+   ctx.beginPath();
+   ctx.strokeStyle = css_string_from_color( color ); // calling this a lot for the same color probably
+   ctx.moveTo( from.x, from.y );
+   ctx.lineTo( to.x, to.y );
+   ctx.stroke();
+	
+}
+
+function animate_dots( time_passed_ms ) {
+	
+	let time_passed_seconds = time_passed_ms / 1000;
+	
+	world.dots = world.dots.filter( d => in_bounds( d.position, world.width, world.height ) );
+	
+	for( var i=0; i<world.dots.length; i++ ) {
+		
+		let d = world.dots[i];
+		
+	   ctx.beginPath();
+	   ctx.fillStyle = css_string_from_color(d.color); // calling this a lot for the same color probably
+	   ctx.arc(d.position.x, d.position.y, d.size, 0, PI_2, false);
+	   ctx.fill();
+		
+		d.position = add( d.position, mul( d.velocity, time_passed_seconds) );
+	}
+	
+}
+
+function animate_lines( time_passed_ms ) {
+	
+	world.lines = world.lines.filter( l => (l.color.r > COLOR_MIN) || (l.color.g > COLOR_MIN) || (l.color.b > COLOR_MIN) );
+	
+	for( var i=0; i<world.lines.length; i++) {
+		let l = world.lines[i];
+
+		draw_line( l.start, add( l.start, l.delta ), l.color );
+
+		if( l.rotation != undefined ) {
+			l.delta = rotate( l.delta, 60 * time_passed_ms/1000 * l.rotation );			
+		}
+		l.color = mul( l.color, 0.98 );
+		let distance = mul( l.velocity, time_passed_ms/1000 );
+		l.start = add( l.start, distance );
+	}
+	
+}
+
+function animate_stars( time_passed_ms ) {
+	
+	
+	// draw a + sign, several times overlapping, smaller each time to get a gradient
+	// then rotate it for next time
+
+	world.stars = world.stars.filter( s => ( in_bounds( s.position, world.width, world.height) ) && ( (s.color.r > COLOR_MIN) || (s.color.g > COLOR_MIN) || (s.color.b > COLOR_MIN) ) );
+
+	for( var i=0; i<world.stars.length; i++ ) {
+		
+		let s = world.stars[i];
+		let angle_offset = s.rotation * time_passed_ms/1000;
+
+		let angles = 4;
+	   for( var a = 0; a < angles; a++ ) {
+			let angle = angle_offset + ( a/angles * PI_2 );
+	      let x = Math.cos( angle );
+	      let y = Math.sin( angle );
+
+			let min_distance = s.size / 3;
+			let max_distance = s.size;
+			let step = (max_distance - min_distance) / 3;
+			for( var d = min_distance; d < max_distance; d += step) {
+				let end = v3( d * x + s.position.x, d * y + s.position.y, 0); // outward from the center_velocity
+				draw_line( v3(s.position.x, s.position.y, 0), end, s.color );
+			}
+   	}
+		
+		// s.color = mul( s.color, 0.98 );
+		s.position = add( s.position, mul( s.velocity, time_passed_ms/1000 ) );
+	}
+
+}
 
 
 // create a bunch of fading fireflies at the edge of circle (or point)
@@ -757,7 +957,9 @@ function rocket_burst_poly( center, power, base_color ) {
 			let end = v3( x, y, 0);
 			corners.push( end );
 			if( DEBUG ) {
-				line( v3(center.x, center.y, 0), v3( x - center.x, y - center.y ), base_color );				
+				let screen_coords_center = screen_coords_from_world_coords( center );
+				let screen_coords_end = screen_coords_from_world_coords( end );
+				line( v3(screen_coords_center.x, screen_coords_center.y, 0), v3( screen_coords_end.x - screen_coords_center.x, screen_coords_end.y - screen_coords_center.y ), v3(0,0,0), base_color );				
 			}	
       }
 
@@ -767,7 +969,8 @@ function rocket_burst_poly( center, power, base_color ) {
 			let c2 = corners[ (i+1) % poly ];
 			let diff = sub( c2, c1 );
 			if( DEBUG ) {
-				line( c1, diff, base_color );				
+				let screen_coords_c1 = screen_coords_from_world_coords( c1 );
+				line( screen_coords_c1, diff, v3(0,0,0), base_color );				
 			}	
 
 			let fireflies_count = Math.min( 10, power * d );
@@ -808,24 +1011,8 @@ function rocket_burst_circle( center, power, base_color ) {
 
 }
 
-function animate_lines() {
-	
-	for( var i=0; i<world.lines.length; i++) {
-		let l = world.lines[i];
-	   ctx.beginPath();
-	   ctx.strokeStyle = css_string_from_color(l.color); // calling this a lot for the same color probably
-	   ctx.moveTo( l.start.x, l.start.y );
-	   ctx.lineTo( l.start.x + l.delta.x, l.start.y + l.delta.y );
-	   ctx.stroke();
-
-		if( l.rotation != undefined ) {
-			l.delta = rotate( l.delta, l.rotation );			
-		}
-		l.color = mul( l.color, 0.98 );
-	}
-	
-	world.lines = world.lines.filter( l => (l.color.r > COLOR_MIN) || (l.color.g > COLOR_MIN) || (l.color.b > COLOR_MIN))
-
+function in_bounds( position, width, height ) {
+	return position.x > 0 && position.x < width && position.y > 0 && position.y < height;
 }
 
 // random float number from [0, max) or [min, max)
