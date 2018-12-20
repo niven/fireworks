@@ -30,13 +30,16 @@ var FIRE_SIZE_MAX = 8;
 var ROCKET_HALO_COUNT = 5;
 // we want the rockets to explode at about 2/3rds of the height of the canvas
 // TODO: actual math here. Too early and I've had too little tea
-let ROCKET_VELOCITY_Y = -200;
+let ROCKET_VELOCITY_Y = -250;
 
 var STAR_SIZE = 3;
 
-var SPRAY_MAX_AGE_MS = 3000;
+var SPRAY_MAX_AGE_MS = 1 * 1000;
+var SPRAY_STAR_SPAWN_RATE = 50; // per second
 var TWINKLE_FACTOR = 1;
 
+let COLOR_FADE_NONE = 1; // Keep the color at 100%
+let COLOR_FADE_DEFAULT = 0.98;
 let COLOR_MIN = 20.0; // cutoff color value for removing fireflies
 let GRADIENT_WIDTH = 100;
 	
@@ -61,7 +64,17 @@ var controls = {
 	"twinkle": { "dom_id": "twinkle", "var": "TWINKLE_FACTOR" },
 }
 
-var world = {};
+var world = {
+	"fireflies": [],
+	"rockets": [],
+	"sprays": [],
+	"balls": [],
+	"lines": [],
+	"smoke": [],
+	"stars": [],
+	"dots": [],
+	"fire": [],
+};
 
 var ctx;
 var fire_gradient;
@@ -72,6 +85,7 @@ var water_colors;
 var running = true;
 var frame_render_time_ms = new Array( 100 );
 
+let COLOR_WHITE = v3( 255, 255, 255 );
 let colors = [
 	v3(200, 20, 20),
 	v3(250, 250, 0),
@@ -146,6 +160,11 @@ function read_control_values() {
 		window[ controls[key].var ] = new_value;
 	}
 
+	if( !DEBUG ) {
+		world.lines = [];
+		world.dots = [];
+	}
+
 	control_values_need_update = false;
 }
 
@@ -162,7 +181,7 @@ function firefly( position, color, velocity ) {
 	);
 }
 
-function line( start, delta, velocity, color, optional_rotation_rad ) {
+function line( start, delta, velocity, color, optional_rotation_rad, optional_fade ) {
 	
 	world.lines.push(
 		{
@@ -170,7 +189,8 @@ function line( start, delta, velocity, color, optional_rotation_rad ) {
 			"delta": delta,
 			"velocity": velocity,
 			"color": color,
-			"rotation": optional_rotation_rad,
+			"rotation": optional_rotation_rad || 0,
+			"fade": optional_fade || COLOR_FADE_DEFAULT,
 		}
 	);
 }
@@ -211,7 +231,8 @@ function spray( position, velocity, color ) {
 			"position": position,
 			"velocity": velocity,
 			"color": color,
-			"created_ms": Date.now()
+			"stars_spawned": 0,
+			"age": 0,
 		}
 	);
 }
@@ -238,7 +259,7 @@ function star( position, velocity, size, color ) {
 			"velocity": velocity,
 			"size": size,
 			"color": color,
-			"rotation": TWINKLE_FACTOR * (Math.random() < 0.5 ? PI_2 : -PI_2)
+			"rotation": rnd( 0, PI_2 )
 		}
 	);
 }
@@ -305,8 +326,27 @@ function create_initial_objects() {
 		world.balls = preballs;
 	}
 
-	spray( v3(300, 300, 0), v3(10, -20,0), pick_color() );
-	// rocket( v3(400, world.height - 1, 0), v3( 0, ROCKET_VELOCITY_Y, 0) );
+	// let spray_color = pick_color();
+	// let spray_loc = v3(300, 200, 0);
+	// spray( spray_loc, v3(150, -130,0), spray_color );
+	// spray( spray_loc, v3(130, 150,0), spray_color );
+	// spray( spray_loc, v3(-130, 150,0), spray_color );
+	// spray( spray_loc, v3(-130, -150,0), spray_color );
+	// spray( spray_loc, v3(0, -150,0), spray_color );
+	// spray( spray_loc, v3(0, 150,0), spray_color );
+	// spray( spray_loc, v3(150, 0,0), spray_color );
+	// spray( spray_loc, v3(-150, 0,0), spray_color );
+	// // rocket( v3(400, world.height - 1, 0), v3( 0, ROCKET_VELOCITY_Y, 0) );
+	//
+	// let center = v3(600, 200, 0);
+	// let N = 5;
+	// let vectors = radial_vectors( N );
+	// console.log( vectors);
+	// for( var i=0; i<N; i++) {
+	// 	spray( center, mul(vectors[i], 150), spray_color );
+	// 	line( center, mul(vectors[i], 200), v0, COLOR_WHITE );
+	// }
+	
 	
 }
 
@@ -387,16 +427,6 @@ function main() {
 	world.top = 0;
 	world.left = 0;
 	world.right = world.width;
-	
-	world.fireflies = []; // drift and fade fast
-	world.rockets = [];
-	world.smoke = []; // drift very little, expand and fade
-	world.fire = []; // cycle through 'fire colors'
-	world.lines = [];
-	world.sprays = [];
-	world.stars = [];
-	world.dots = [];
-	world.balls = [];
 	
 	create_initial_objects();
 	
@@ -642,13 +672,16 @@ function animate_rockets( time_delta_ms ) {
 	// explode any rockets that have reached their maximum height (ish, it's easier to explode them when they slow down)
 	world.rockets = world.rockets.filter( rocket => in_bounds( rocket.position, world.width, world.height) ); // only retain ones that are in view
 	//
-	let rocket_explode_velocity = -40; // m/s
+	let rocket_explode_velocity = -60; // m/s
 
 	world.rockets.filter( rocket => rocket.velocity.y >= rocket_explode_velocity ).forEach( function( el, idx, arr ) {
 		console.log ("splde");
-		// poly does random 3,4,5,6 sides, so +circle there are 5 options
-		if( Math.random() < 1/5 ) {
+		// poly does random 3,4,5,6 sides, plus circle plus spray there are 6 options
+		let fraction = Math.random();
+		if( fraction < 1/6 ) {
 			rocket_burst_circle( el.position, 40, el.color );
+		} else if( fraction < 2/6 ) {			
+			rocket_burst_spray( el.position, 150, el.color );
 		} else {
 			rocket_burst_poly( el.position, 40, el.color );
 		}
@@ -667,11 +700,6 @@ function animate_rockets( time_delta_ms ) {
 		if( DEBUG ) {
 			dot( screen_coords, v0, 2, colors[0] );
 		}
-		// rendering is quite fast, so avoid generating 1000s of fireflies
-		// if( Math.random() < 0.5 ) {
-		// 	// firefly( v3(el.position.x, el.position.y, 0), mul(el.color, 0.3), v3(0,0,0) );
-		// 	fire( v3(r.position.x, r.position.y, 0), v3(0,0,0) );
-		// }
 
 	   ctx.beginPath()
 	   ctx.fillStyle = css_string_from_color(r.color);
@@ -682,7 +710,7 @@ function animate_rockets( time_delta_ms ) {
 	   r.position = add( r.position, mul( r.velocity, time_delta_seconds ) );
 		// vertical speed is reduced by gravity (adding because y speed is negative)
 		r.velocity = add( r.velocity, mul(GRAVITY, time_delta_seconds) );
-		r.velocity.y += 25 * time_delta_seconds; // "fuel spent"
+		r.velocity.y += 50 * time_delta_seconds; // "fuel spent"
 		
 	}
 	
@@ -798,25 +826,33 @@ function animate_balls( time_passed_ms ) {
 
 function animate_sprays( time_delta_ms ) {
 
-
 	let time_delta_seconds = time_delta_ms / 1000;
-	let gravity_drop = mul( mul( GRAVITY, time_delta_seconds ), 0.1); // gravity 10%
+	let gravity_drop = mul( GRAVITY, 3 * time_delta_seconds ); // gravity 10x since they go so fast
+	let trail_angle_rad = PI_2 * (30/360);
 	
 	world.sprays = world.sprays.filter( s => in_bounds( s.position, world.width, world.height ) );
+	world.sprays = world.sprays.filter( s => s.age < SPRAY_MAX_AGE_MS );
 	
 	for( var i=0; i<world.sprays.length; i++ ) {
 		let s = world.sprays[i];
+		s.age += time_delta_ms;
 
 		// determines how wide the trail is
-		let angle = rnd( PI_2 * (45/360), -PI_2 * (45/360));
+		let angle = rnd( trail_angle_rad, -trail_angle_rad );
 		let star_direction = rotate( s.velocity, angle );
-		let star_velocity = mul( star_direction, 0.1 );
-		//
-		if( Math.random() < (0.3) ) {
-			dot( s.position, star_velocity, 3, s.color );
-		// 	star_obj( s.position, star_velocity, STAR_SIZE, s.color )
+		let star_velocity = mul( star_direction, 0.08 );
+
+		// spawn stars according to the spawn rate
+		let stars_total = s.age * SPRAY_STAR_SPAWN_RATE / 1000;
+		// WRONGGGG: multiple stars will have the same position and vector!
+		for( var star_i = s.stars_spawned; star_i < stars_total; star_i++ ) {
+			star( s.position, star_velocity, STAR_SIZE, s.color )
+			s.stars_spawned++;
 		}
-		// star( s.position, star_velocity, STAR_SIZE, s.color );
+		if( DEBUG ) {
+			let delta = mul( s.velocity, time_delta_seconds );
+			line( s.position, delta, v0, COLOR_WHITE, null, COLOR_FADE_NONE );
+		}
 		
 		s.position = add( s.position, mul( s.velocity, time_delta_seconds ) );
 		s.velocity = add( s.velocity, gravity_drop );
@@ -831,7 +867,6 @@ function draw_line( from, to, color ) {
    ctx.moveTo( from.x, from.y );
    ctx.lineTo( to.x, to.y );
    ctx.stroke();
-	
 }
 
 function animate_dots( time_passed_ms ) {
@@ -863,10 +898,10 @@ function animate_lines( time_passed_ms ) {
 
 		draw_line( l.start, add( l.start, l.delta ), l.color );
 
-		if( l.rotation != undefined ) {
+		if( l.rotation != 0 ) {
 			l.delta = rotate( l.delta, 60 * time_passed_ms/1000 * l.rotation );			
 		}
-		l.color = mul( l.color, 0.98 );
+		// l.color = mul( l.color, l.fade );
 		let distance = mul( l.velocity, time_passed_ms/1000 );
 		l.start = add( l.start, distance );
 	}
@@ -881,14 +916,14 @@ function animate_stars( time_passed_ms ) {
 
 	world.stars = world.stars.filter( s => ( in_bounds( s.position, world.width, world.height) ) && ( (s.color.r > COLOR_MIN) || (s.color.g > COLOR_MIN) || (s.color.b > COLOR_MIN) ) );
 
+	let time_passed_seconds = time_passed_ms / 1000;
+	let angles = 4;
 	for( var i=0; i<world.stars.length; i++ ) {
-		
 		let s = world.stars[i];
-		let angle_offset = s.rotation * time_passed_ms/1000;
-
-		let angles = 4;
+		
+		// console.log( angle_offset );
 	   for( var a = 0; a < angles; a++ ) {
-			let angle = angle_offset + ( a/angles * PI_2 );
+			let angle = s.rotation + ( a/angles * PI_2 );
 	      let x = Math.cos( angle );
 	      let y = Math.sin( angle );
 
@@ -901,12 +936,12 @@ function animate_stars( time_passed_ms ) {
 			}
    	}
 		
-		// s.color = mul( s.color, 0.98 );
+		s.color = mul( s.color, COLOR_FADE_DEFAULT );
 		s.position = add( s.position, mul( s.velocity, time_passed_ms/1000 ) );
+		s.rotation = rnd( 0, PI_2 );
 	}
 
 }
-
 
 // create a bunch of fading fireflies at the edge of circle (or point)
 function burst( ball ) {
@@ -959,7 +994,7 @@ function rocket_burst_poly( center, power, base_color ) {
 			if( DEBUG ) {
 				let screen_coords_center = screen_coords_from_world_coords( center );
 				let screen_coords_end = screen_coords_from_world_coords( end );
-				line( v3(screen_coords_center.x, screen_coords_center.y, 0), v3( screen_coords_end.x - screen_coords_center.x, screen_coords_end.y - screen_coords_center.y ), v3(0,0,0), base_color );				
+				line( v3(screen_coords_center.x, screen_coords_center.y, 0), v3( screen_coords_end.x - screen_coords_center.x, screen_coords_end.y - screen_coords_center.y ), v3(0,0,0), base_color, null, COLOR_FADE_NONE );				
 			}	
       }
 
@@ -970,7 +1005,7 @@ function rocket_burst_poly( center, power, base_color ) {
 			let diff = sub( c2, c1 );
 			if( DEBUG ) {
 				let screen_coords_c1 = screen_coords_from_world_coords( c1 );
-				line( screen_coords_c1, diff, v3(0,0,0), base_color );				
+				line( screen_coords_c1, diff, v3(0,0,0), base_color, null, COLOR_FADE_NONE );				
 			}	
 
 			let fireflies_count = Math.min( 10, power * d );
@@ -1007,6 +1042,20 @@ function rocket_burst_circle( center, power, base_color ) {
 			let center_velocity = mul( v3( x - center.x, y - center.y, 0), FIREFLY_SPEED *  1/max_distance);
 			firefly( v3( x, y, 0), color, center_velocity );
 	   }
+	}
+
+}
+
+function rocket_burst_spray( center, power, base_color ) {
+
+	let N = rnd_int( 9, 4 );
+	let vectors = radial_vectors( N );
+	console.log( vectors);
+	for( var i=0; i<N; i++) {
+		spray( center, mul(vectors[i], power), mul(base_color, 10) );
+		if( DEBUG ) {
+			line( center, mul(vectors[i], power), v0, COLOR_WHITE, null, COLOR_FADE_NONE );			
+		}
 	}
 
 }
@@ -1096,4 +1145,20 @@ function rotate( vector, angle ) {
 	let y1 = vector.x * Math.sin( angle ) + vector.y * Math.cos( angle );
 
 	return v3( x1, y1, 0 );
+}
+
+// create N unit vectors out from point
+// Note: these are always the same, just translated. Precompute this for N=2,3,4,5,6,7 maybe?
+// 		but what about rotations?
+function radial_vectors( N ) {
+
+	let result = [];
+   for( var i = 0; i < N; i++ ) {
+		let angle = i/N * PI_2;
+      let x = Math.cos(angle);
+      let y = Math.sin(angle);
+		result.push( unit( v3(x, y, 0) ) );
+	}
+
+	return result;
 }
